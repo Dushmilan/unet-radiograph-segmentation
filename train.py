@@ -1,8 +1,10 @@
 """
 Training script for U-Net segmentation model.
+GPU-ONLY: This script requires a working GPU setup.
 """
 
 import os
+import sys
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.callbacks import (
@@ -15,6 +17,48 @@ from tensorflow.keras.callbacks import (
 
 from unet_model import get_compiled_unet
 from data_loader import create_data_generators
+
+
+def check_gpu_requirement():
+    """
+    Check if GPU is available. Exit if not.
+    This script requires GPU for training.
+    """
+    print("\n" + "=" * 80)
+    print("GPU REQUIREMENT CHECK")
+    print("=" * 80)
+    
+    gpus = tf.config.list_physical_devices('GPU')
+    
+    if not gpus:
+        print("\n❌ ERROR: No GPU detected!")
+        print("\nThis training script requires a GPU. Please fix your GPU setup before proceeding.")
+        print("\nTroubleshooting steps:")
+        print("  1. Run: python test_gpu_comprehensive.py")
+        print("  2. Follow the recommendations from the diagnostic")
+        print("  3. Ensure CUDA paths are in system PATH")
+        print("  4. Restart your computer after PATH changes")
+        print("  5. Run this script again")
+        print("\nFor detailed GPU setup instructions, see GPU_SETUP.md")
+        sys.exit(1)
+    
+    print(f"\n✓ GPU(s) detected: {len(gpus)}")
+    for i, gpu in enumerate(gpus):
+        print(f"  GPU {i}: {gpu.name}")
+    
+    # Enable memory growth
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("\n✓ Memory growth enabled for all GPUs")
+    except RuntimeError as e:
+        print(f"\n⚠ Warning: Could not enable memory growth: {e}")
+    
+    print("\n" + "=" * 80)
+    print("GPU CHECK PASSED - Starting training...")
+    print("=" * 80 + "\n")
+    
+    return gpus
 
 
 def train_unet(
@@ -42,12 +86,12 @@ def train_unet(
         learning_rate: Initial learning rate
         augment: Whether to use data augmentation
     """
+    # Check GPU requirement FIRST
+    gpus = check_gpu_requirement()
+    
     # Create directories
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
-    
-    # Enable mixed precision for faster training on GPU
-    # tf.keras.mixed_precision.set_global_policy('mixed_float16')
     
     print("=" * 60)
     print("U-Net Training for Image Segmentation")

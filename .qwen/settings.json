@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(pip uninstall *)",
+      "Bash(pip install *)",
+      "Bash(nvcc *)",
+      "Bash(nvidia-smi)",
+      "Bash(dir *)",
+      "Bash(echo)",
+      "Bash(where *)",
+      "Bash(findstr *)",
+      "Bash(refreshenv)"
+    ]
+  },
+  "$version": 3
+}
