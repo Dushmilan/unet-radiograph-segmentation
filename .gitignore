@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Project specific - Large files and generated data
+TUFTS/Radiographs/training_images/
+TUFTS/Radiographs/testing_images/
+*.JPG
+*.jpg
+*.png
+*.bmp
+*.jpeg
+
+# Keep the bbox annotations (small files)
+!TUFTS/bboxes/
+
+# Models and logs (generated during training)
+models/
+logs/
+*.h5
+*.pb
+*.pth
+*.pt
+
+# Predictions output
+predictions/
+
+# Training history
+*.csv
+!TUFTS/bboxes/*.csv
+
+# TensorBoard logs
+logs/training/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
