@@ -75,10 +75,19 @@ def train_unet(
     input_width=512,
     learning_rate=1e-4,
     augment=True,
-    loss_type='combined'
+    loss_type='combined',
+    use_pretrained=False,
+    pretrained_backbone='resnet50',
+    dropout_rate=0.2,
+    use_residual=True,
+    use_attention=True,
+    use_cosine_decay=False,
+    use_patch_based=False,
+    patch_size=256,
+    unfreeze_epoch=50
 ):
     """
-    Train U-Net model for image segmentation.
+    Train enhanced U-Net model for image segmentation.
 
     Args:
         data_dir: Directory containing the dataset
@@ -90,19 +99,37 @@ def train_unet(
         input_width: Input image width
         learning_rate: Initial learning rate
         augment: Whether to use data augmentation
-        loss_type: Type of loss function ('combined', 'dice', 'iou', 'tversky', 'weighted_bce')
+        loss_type: Type of loss function ('combined', 'dice', 'iou', 'iou_dice', 'tversky')
+        use_pretrained: Whether to use pretrained backbone
+        pretrained_backbone: Backbone type ('resnet50', 'vgg16')
+        dropout_rate: Dropout rate for regularization
+        use_residual: Whether to use residual connections
+        use_attention: Whether to use attention gates
+        use_cosine_decay: Whether to use cosine learning rate decay
+        use_patch_based: Whether to use patch-based training
+        patch_size: Size of patches for patch-based training
+        unfreeze_epoch: Epoch to unfreeze pretrained backbone (if use_pretrained=True)
     """
     # Check GPU requirement FIRST
     gpus = check_gpu_requirement()
-    
+
     # Create directories
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
-    
+
     print("=" * 60)
-    print("U-Net Training for Image Segmentation")
+    print("Enhanced U-Net Training for Image Segmentation")
     print("=" * 60)
-    
+    print(f"\nConfiguration:")
+    print(f"  Loss function: {loss_type}")
+    print(f"  Pretrained backbone: {pretrained_backbone if use_pretrained else 'None (training from scratch)'}")
+    print(f"  Dropout rate: {dropout_rate}")
+    print(f"  Residual connections: {use_residual}")
+    print(f"  Attention gates: {use_attention}")
+    print(f"  Cosine LR decay: {use_cosine_decay}")
+    print(f"  Patch-based training: {use_patch_based}")
+    print(f"  Data augmentation: {augment}")
+
     # Create data generators
     print("\n[1/4] Creating data generators...")
     train_gen, val_gen = create_data_generators(
@@ -110,29 +137,42 @@ def train_unet(
         batch_size=batch_size,
         target_height=input_height,
         target_width=input_width,
-        augment=augment
+        augment=augment,
+        use_patch_based=use_patch_based,
+        patch_size=patch_size
     )
-    
+
     print(f"  Training samples: {len(train_gen) * batch_size}")
     print(f"  Validation samples: {len(val_gen) * batch_size}")
     print(f"  Batch size: {batch_size}")
     print(f"  Input size: {input_height}x{input_width}")
-    
+
     # Create model
-    print("\n[2/4] Building U-Net model...")
-    print(f"  Using loss function: {loss_type}")
+    print("\n[2/4] Building enhanced U-Net model...")
+    
+    # Calculate decay steps for cosine annealing
+    decay_steps = len(train_gen) * epochs if use_cosine_decay else 10000
+    
     model = get_compiled_unet(
         learning_rate=learning_rate,
         input_height=input_height,
         input_width=input_width,
         num_classes=1,
-        loss_type=loss_type
+        loss_type=loss_type,
+        use_pretrained=use_pretrained,
+        pretrained_backbone=pretrained_backbone,
+        dropout_rate=dropout_rate,
+        use_residual=use_residual,
+        use_attention=use_attention,
+        use_cosine_decay=use_cosine_decay,
+        decay_steps=decay_steps,
+        alpha=0.01  # Minimum LR = 1% of initial
     )
     model.summary()
-    
+
     # Define callbacks
     print("\n[3/4] Setting up callbacks...")
-    
+
     # Model checkpoint - save best model based on IoU
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(model_dir, 'unet_best.h5'),
@@ -146,8 +186,8 @@ def train_unet(
     # Early stopping - based on IoU
     early_stopping_callback = EarlyStopping(
         monitor='val_mean_io_u',
-        patience=20,  # Increased patience for IoU
-        min_delta=0.01,  # Minimum IoU improvement
+        patience=25,  # Increased patience
+        min_delta=0.005,  # Minimum IoU improvement
         mode='max',
         verbose=1,
         restore_best_weights=True
@@ -157,29 +197,20 @@ def train_unet(
     reduce_lr_callback = ReduceLROnPlateau(
         monitor='val_mean_io_u',
         factor=0.5,
-        patience=10,
+        patience=12,
         min_lr=1e-7,
-        min_delta=0.005,
+        min_delta=0.003,
         mode='max',
         verbose=1
     )
-    
-    # TensorBoard - REMOVED due to OOM issues with histogram logging
-    # Use CSV logger instead for training metrics
-    # tensorboard_callback = TensorBoard(
-    #     log_dir=os.path.join(logs_dir, 'training'),
-    #     histogram_freq=0,
-    #     write_graph=False,
-    #     write_images=False
-    # )
-    
+
     # CSV logger
     csv_logger_callback = CSVLogger(
         os.path.join(logs_dir, 'training_history.csv'),
         append=False,
         separator=','
     )
-    
+
     callbacks = [
         checkpoint_callback,
         early_stopping_callback,
@@ -187,10 +218,32 @@ def train_unet(
         csv_logger_callback
     ]
     
+    # Optional: Unfreeze pretrained backbone after initial training
+    if use_pretrained and unfreeze_epoch is not None:
+        def unfreeze_backbone(epoch):
+            if epoch == unfreeze_epoch:
+                print(f"\n>>> Unfreezing pretrained backbone at epoch {epoch} <<<")
+                for layer in model.layers:
+                    if hasattr(layer, 'trainable'):
+                        layer.trainable = True
+                model.compile(
+                    optimizer=tf.keras.optimizers.AdamW(
+                        learning_rate=learning_rate * 0.1,  # Lower LR for fine-tuning
+                        weight_decay=1e-4,
+                        clipnorm=1.0
+                    ),
+                    loss=model.loss,
+                    metrics=model.metrics
+                )
+        
+        from tensorflow.keras.callbacks import LambdaCallback
+        unfreeze_callback = LambdaCallback(on_epoch_begin=unfreeze_backbone)
+        callbacks.append(unfreeze_callback)
+
     # Train model
     print("\n[4/4] Starting training...")
     print("=" * 60)
-    
+
     history = model.fit(
         train_gen,
         validation_data=val_gen,
@@ -313,20 +366,46 @@ if __name__ == "__main__":
     LOGS_DIR = 'logs'
 
     # Training parameters
-    BATCH_SIZE = 2
-    EPOCHS = 100
+    BATCH_SIZE = 4  # Reduced for better gradient updates
+    EPOCHS = 150  # Increased for better convergence
     INPUT_HEIGHT = 512
     INPUT_WIDTH = 512
     LEARNING_RATE = 1e-4
+
+    # ============================================================
+    # IMPROVEMENTS CONFIGURATION
+    # ============================================================
     
     # Loss function selection:
-    # 'combined' - BCE + Dice (recommended, good balance)
+    # 'combined' - BCE + Dice + Focal (recommended, best performance)
+    # 'iou_dice' - IoU + Dice combination (direct IoU optimization)
     # 'dice' - Dice loss only (better for class imbalance)
     # 'iou' - Direct IoU optimization
     # 'tversky' - Tversky loss (adjustable FP/FN tradeoff)
-    # 'weighted_bce' - Weighted BCE (focus on foreground)
-    # 'binary_crossentropy' - Standard BCE (baseline)
     LOSS_TYPE = 'combined'
+    
+    # Pretrained backbone (set to True to use transfer learning):
+    # False - Train from scratch (current default)
+    # True - Use pretrained ResNet50/VGG16 backbone
+    USE_PRETRAINED = False
+    PRETRAINED_BACKBONE = 'resnet50'  # Options: 'resnet50', 'vgg16'
+    
+    # Regularization:
+    DROPOUT_RATE = 0.2  # Increased from 0.1 for better regularization
+    USE_RESIDUAL = True  # Residual connections for better gradient flow
+    USE_ATTENTION = True  # Attention gates in decoder
+    
+    # Learning rate scheduling:
+    USE_COSINE_DECAY = True  # Cosine annealing for better convergence
+    
+    # Data augmentation:
+    AUGMENT = True  # Enhanced augmentation (elastic, noise, blur, etc.)
+    
+    # Patch-based training (optional):
+    USE_PATCH_BASED = False  # Set True for patch-based training
+    PATCH_SIZE = 256  # Patch size for patch-based training
+    
+    # ============================================================
 
     # Train the model
     model, history = train_unet(
@@ -338,10 +417,18 @@ if __name__ == "__main__":
         input_height=INPUT_HEIGHT,
         input_width=INPUT_WIDTH,
         learning_rate=LEARNING_RATE,
-        augment=True,
-        loss_type=LOSS_TYPE
+        augment=AUGMENT,
+        loss_type=LOSS_TYPE,
+        use_pretrained=USE_PRETRAINED,
+        pretrained_backbone=PRETRAINED_BACKBONE,
+        dropout_rate=DROPOUT_RATE,
+        use_residual=USE_RESIDUAL,
+        use_attention=USE_ATTENTION,
+        use_cosine_decay=USE_COSINE_DECAY,
+        use_patch_based=USE_PATCH_BASED,
+        patch_size=PATCH_SIZE
     )
-    
+
     # Evaluate
     evaluate_model(
         model,
@@ -350,6 +437,25 @@ if __name__ == "__main__":
         input_height=INPUT_HEIGHT,
         input_width=INPUT_WIDTH
     )
-    
+
     print("\nTraining complete! You can now use the model for predictions.")
     print(f"Best model saved at: {os.path.join(MODEL_DIR, 'unet_best.h5')}")
+    print(f"Final model saved at: {os.path.join(MODEL_DIR, 'unet_final.h5')}")
+    
+    # Print training summary
+    print("\n" + "=" * 60)
+    print("Training Summary:")
+    print("=" * 60)
+    print(f"  Loss type: {LOSS_TYPE}")
+    print(f"  Pretrained: {USE_PRETRAINED}")
+    print(f"  Dropout: {DROPOUT_RATE}")
+    print(f"  Residual: {USE_RESIDUAL}")
+    print(f"  Attention: {USE_ATTENTION}")
+    print(f"  Cosine LR decay: {USE_COSINE_DECAY}")
+    print(f"  Enhanced augmentation: {AUGMENT}")
+    
+    if hasattr(history, 'history'):
+        best_iou = max(history.history.get('val_mean_io_u', [0]))
+        best_dice = max(history.history.get('val_dice_coefficient', [0]))
+        print(f"\n  Best Validation IoU: {best_iou:.4f}")
+        print(f"  Best Validation Dice: {best_dice:.4f}")
