@@ -5,6 +5,10 @@ GPU-ONLY: This script requires a working GPU setup.
 
 import os
 import sys
+
+# Configure CUDA DLL paths BEFORE importing TensorFlow
+import configure_cuda
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.callbacks import (
@@ -70,11 +74,12 @@ def train_unet(
     input_height=512,
     input_width=512,
     learning_rate=1e-4,
-    augment=True
+    augment=True,
+    loss_type='combined'
 ):
     """
     Train U-Net model for image segmentation.
-    
+
     Args:
         data_dir: Directory containing the dataset
         model_dir: Directory to save model checkpoints
@@ -85,6 +90,7 @@ def train_unet(
         input_width: Input image width
         learning_rate: Initial learning rate
         augment: Whether to use data augmentation
+        loss_type: Type of loss function ('combined', 'dice', 'iou', 'tversky', 'weighted_bce')
     """
     # Check GPU requirement FIRST
     gpus = check_gpu_requirement()
@@ -114,45 +120,47 @@ def train_unet(
     
     # Create model
     print("\n[2/4] Building U-Net model...")
+    print(f"  Using loss function: {loss_type}")
     model = get_compiled_unet(
         learning_rate=learning_rate,
         input_height=input_height,
         input_width=input_width,
-        num_classes=1
+        num_classes=1,
+        loss_type=loss_type
     )
     model.summary()
     
     # Define callbacks
     print("\n[3/4] Setting up callbacks...")
     
-    # Model checkpoint - save best model
+    # Model checkpoint - save best model based on IoU
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(model_dir, 'unet_best.h5'),
-        monitor='val_loss',
+        monitor='val_mean_io_u',  # Monitor IoU instead of loss
         save_best_only=True,
         save_weights_only=False,
-        mode='min',
+        mode='max',  # We want to maximize IoU
         verbose=1
     )
-    
-    # Early stopping
+
+    # Early stopping - based on IoU
     early_stopping_callback = EarlyStopping(
-        monitor='val_loss',
-        patience=15,
-        min_delta=1e-4,
-        mode='min',
+        monitor='val_mean_io_u',
+        patience=20,  # Increased patience for IoU
+        min_delta=0.01,  # Minimum IoU improvement
+        mode='max',
         verbose=1,
         restore_best_weights=True
     )
-    
-    # Reduce learning rate on plateau
+
+    # Reduce learning rate on plateau - monitor IoU
     reduce_lr_callback = ReduceLROnPlateau(
-        monitor='val_loss',
+        monitor='val_mean_io_u',
         factor=0.5,
-        patience=7,
+        patience=10,
         min_lr=1e-7,
-        min_delta=1e-4,
-        mode='min',
+        min_delta=0.005,
+        mode='max',
         verbose=1
     )
     
@@ -303,14 +311,23 @@ if __name__ == "__main__":
     DATA_DIR = os.path.join(os.path.dirname(__file__), 'TUFTS')
     MODEL_DIR = 'models'
     LOGS_DIR = 'logs'
-    
+
     # Training parameters
-    BATCH_SIZE = 8
+    BATCH_SIZE = 2
     EPOCHS = 100
     INPUT_HEIGHT = 512
     INPUT_WIDTH = 512
     LEARNING_RATE = 1e-4
     
+    # Loss function selection:
+    # 'combined' - BCE + Dice (recommended, good balance)
+    # 'dice' - Dice loss only (better for class imbalance)
+    # 'iou' - Direct IoU optimization
+    # 'tversky' - Tversky loss (adjustable FP/FN tradeoff)
+    # 'weighted_bce' - Weighted BCE (focus on foreground)
+    # 'binary_crossentropy' - Standard BCE (baseline)
+    LOSS_TYPE = 'combined'
+
     # Train the model
     model, history = train_unet(
         data_dir=DATA_DIR,
@@ -321,7 +338,8 @@ if __name__ == "__main__":
         input_height=INPUT_HEIGHT,
         input_width=INPUT_WIDTH,
         learning_rate=LEARNING_RATE,
-        augment=True
+        augment=True,
+        loss_type=LOSS_TYPE
     )
     
     # Evaluate

@@ -198,28 +198,79 @@ class SegmentationDataGenerator(Sequence):
         if np.random.random() > 0.5:
             image = cv2.flip(image, 1)
             mask = cv2.flip(mask, 1)
-        
+
         # Random vertical flip
         if np.random.random() > 0.5:
             image = cv2.flip(image, 0)
             mask = cv2.flip(mask, 0)
-        
+
         # Random rotation (small angles)
         if np.random.random() > 0.5:
             angle = np.random.uniform(-15, 15)
             h, w = image.shape[:2]
             center = (w // 2, h // 2)
-            
+
             rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
             image = cv2.warpAffine(image, rotation_matrix, (w, h))
-            mask = cv2.warpAffine(mask, rotation_matrix, (w, h), 
+            mask = cv2.warpAffine(mask, rotation_matrix, (w, h),
                                   flags=cv2.INTER_NEAREST)
-        
+
         # Random brightness adjustment
         if np.random.random() > 0.5:
             factor = np.random.uniform(0.8, 1.2)
             image = np.clip(image * factor, 0, 255).astype(np.uint8)
-        
+
+        # Random zoom (scale augmentation)
+        if np.random.random() > 0.5:
+            zoom_factor = np.random.uniform(0.85, 1.15)
+            h, w = image.shape[:2]
+            
+            # Calculate new dimensions
+            new_h, new_w = int(h * zoom_factor), int(w * zoom_factor)
+            
+            # Resize
+            image_zoomed = cv2.resize(image, (new_w, new_h))
+            mask_zoomed = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            
+            # Crop or pad to original size
+            if zoom_factor > 1.0:
+                # Crop center
+                start_y = (new_h - h) // 2
+                start_x = (new_w - w) // 2
+                image = image_zoomed[start_y:start_y+h, start_x:start_x+w]
+                mask = mask_zoomed[start_y:start_y+h, start_x:start_x+w]
+            else:
+                # Pad with zeros
+                image_padded = np.zeros((h, w, 3), dtype=np.uint8)
+                mask_padded = np.zeros((h, w, 1), dtype=np.float32)
+                start_y = (h - new_h) // 2
+                start_x = (w - new_w) // 2
+                image_padded[start_y:start_y+new_h, start_x:start_x+new_w] = image_zoomed
+                mask_padded[start_y:start_y+new_h, start_x:start_x+new_w] = mask_zoomed
+                image = image_padded
+                mask = mask_padded
+
+        # Random translation (shift augmentation)
+        if np.random.random() > 0.5:
+            h, w = image.shape[:2]
+            shift_x = np.random.randint(-20, 20)
+            shift_y = np.random.randint(-20, 20)
+            
+            # Create translation matrix
+            translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+            
+            # Apply translation
+            image = cv2.warpAffine(image, translation_matrix, (w, h))
+            mask = cv2.warpAffine(mask, translation_matrix, (w, h),
+                                  flags=cv2.INTER_NEAREST)
+
+        # Random contrast adjustment
+        if np.random.random() > 0.5:
+            factor = np.random.uniform(0.8, 1.2)
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            mean = np.mean(gray)
+            image = np.clip((image - mean) * factor + mean, 0, 255).astype(np.uint8)
+
         return image, mask
     
     def on_epoch_end(self):

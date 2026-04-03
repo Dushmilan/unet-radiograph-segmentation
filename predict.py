@@ -55,17 +55,19 @@ def preprocess_image(image_path, target_height=512, target_width=512):
     return input_tensor, image, (orig_height, orig_width)
 
 
-def predict(model, image_path, target_height=512, target_width=512, threshold=0.5):
+def predict(model, image_path, target_height=512, target_width=512, threshold=0.5,
+            use_post_processing=True):
     """
     Make prediction on a single image.
-    
+
     Args:
         model: Trained U-Net model
         image_path: Path to the image
         target_height: Target height for resizing
         target_width: Target width for resizing
         threshold: Threshold for binary mask
-    
+        use_post_processing: Apply morphological post-processing
+
     Returns:
         Predicted mask (original size), confidence map
     """
@@ -73,25 +75,62 @@ def predict(model, image_path, target_height=512, target_width=512, threshold=0.
     input_tensor, image, orig_dims = preprocess_image(
         image_path, target_height, target_width
     )
-    
+
     # Predict
     print("Making prediction...")
     prediction = model.predict(input_tensor, verbose=0)
-    
+
     # Get confidence map
     confidence_map = prediction[0, :, :, 0]
-    
+
     # Resize prediction back to original size
     prediction_resized = cv2.resize(
         confidence_map,
         (orig_dims[1], orig_dims[0]),
         interpolation=cv2.INTER_LINEAR
     )
-    
+
     # Apply threshold
     binary_mask = (prediction_resized > threshold).astype(np.uint8)
-    
+
+    # Post-processing to improve mask quality
+    if use_post_processing:
+        binary_mask = post_process_mask(binary_mask)
+
     return binary_mask, prediction_resized, image
+
+
+def post_process_mask(mask, min_area=100, kernel_size=5):
+    """
+    Apply morphological operations to clean up the predicted mask.
+    
+    Args:
+        mask: Binary mask
+        min_area: Minimum contour area to keep (removes small noise)
+        kernel_size: Size of morphological kernel
+    
+    Returns:
+        Cleaned binary mask
+    """
+    # Morphological closing to fill small holes
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    # Morphological opening to remove small noise
+    mask_opened = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # Remove small contours (noise)
+    contours, _ = cv2.findContours(mask_opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask_cleaned = np.zeros_like(mask_opened)
+    
+    for contour in contours:
+        if cv2.contourArea(contour) > min_area:
+            cv2.drawContours(mask_cleaned, [contour], -1, 255, -1)
+    
+    # Convert back to binary
+    mask_cleaned = (mask_cleaned > 0).astype(np.uint8)
+    
+    return mask_cleaned
 
 
 def visualize_prediction(image, binary_mask, confidence_map, save_path=None):

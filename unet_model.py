@@ -7,6 +7,78 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model
 
 
+# ========== Custom Loss Functions for Better IoU ==========
+
+def dice_coefficient(y_true, y_pred, smooth=1.0):
+    """
+    Calculate Dice Coefficient (similar to IoU but emphasizes overlap).
+    """
+    y_true_f = tf.keras.backend.flatten(y_true)
+    y_pred_f = tf.keras.backend.flatten(y_pred)
+    intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
+    return (2. * intersection + smooth) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + smooth)
+
+
+def dice_loss(y_true, y_pred):
+    """
+    Dice Loss = 1 - Dice Coefficient.
+    Better than binary crossentropy for imbalanced segmentation.
+    """
+    return 1.0 - dice_coefficient(y_true, y_pred)
+
+
+def iou_loss(y_true, y_pred, smooth=1.0):
+    """
+    Direct IoU Loss optimization.
+    """
+    y_true_f = tf.keras.backend.flatten(y_true)
+    y_pred_f = tf.keras.backend.flatten(y_pred)
+    intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
+    union = tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) - intersection
+    return 1.0 - (intersection + smooth) / (union + smooth)
+
+
+def tversky_loss(y_true, y_pred, alpha=0.7, beta=0.3, smooth=1.0):
+    """
+    Tversky Loss - Generalization of Dice that handles false positives/negatives.
+    alpha=beta=0.5 gives Dice, alpha=beta=0.5 gives IoU.
+    Higher alpha penalizes false negatives more (good for small objects).
+    """
+    y_true_f = tf.keras.backend.flatten(y_true)
+    y_pred_f = tf.keras.backend.flatten(y_pred)
+    true_pos = tf.keras.backend.sum(y_true_f * y_pred_f)
+    false_neg = tf.keras.backend.sum(y_true_f * (1.0 - y_pred_f))
+    false_pos = tf.keras.backend.sum((1.0 - y_true_f) * y_pred_f)
+    return 1.0 - (true_pos + smooth) / (true_pos + alpha * false_neg + beta * false_pos + smooth)
+
+
+def combined_loss(y_true, y_pred, bce_weight=0.5, dice_weight=0.5):
+    """
+    Combined Binary Crossentropy + Dice Loss.
+    Often works better than either alone.
+    """
+    bce = tf.keras.backend.binary_crossentropy(y_true, y_pred)
+    dice = dice_loss(y_true, y_pred)
+    return bce_weight * bce + dice_weight * dice
+
+
+def weighted_binary_crossentropy(y_true, y_pred, pos_weight=10.0):
+    """
+    Weighted Binary Crossentropy to handle class imbalance.
+    pos_weight: How much to weight positive class (foreground)
+    Higher values = more focus on foreground objects.
+    """
+    # Standard BCE
+    bce = tf.keras.backend.binary_crossentropy(y_true, y_pred)
+    
+    # Create weight mask
+    weight_mask = tf.ones_like(y_true) + (pos_weight - 1.0) * y_true
+    
+    # Apply weights
+    weighted_bce = tf.keras.backend.mean(bce * weight_mask)
+    return weighted_bce
+
+
 def convolution_block(input_tensor, num_filters):
     """
     Double convolution block for U-Net.
@@ -109,38 +181,67 @@ def build_unet(input_height=512, input_width=512, num_classes=1):
     return model
 
 
-def get_compiled_unet(learning_rate=1e-4, input_height=512, input_width=512, num_classes=1):
+def get_compiled_unet(learning_rate=1e-4, input_height=512, input_width=512, num_classes=1,
+                      loss_type='combined', pos_weight=10.0):
     """
     Build and compile U-Net model.
-    
+
     Args:
         learning_rate: Learning rate for optimizer
         input_height: Height of input images
         input_width: Width of input images
         num_classes: Number of output classes
-    
+        loss_type: Type of loss function:
+                   - 'binary_crossentropy': Standard BCE (baseline)
+                   - 'dice': Dice loss (better for imbalance)
+                   - 'iou': Direct IoU optimization
+                   - 'tversky': Tversky loss (adjustable FP/FN tradeoff)
+                   - 'combined': BCE + Dice (recommended)
+                   - 'weighted_bce': Weighted BCE for imbalance
+        pos_weight: Weight for positive class (used with weighted_bce)
+
     Returns:
         Compiled U-Net Keras Model
     """
     model = build_unet(input_height, input_width, num_classes)
-    
-    # Use Adam optimizer
+
+    # Use Adam optimizer with weight decay for better generalization
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    
-    # Choose loss based on number of classes
+
+    # Select loss function based on loss_type
     if num_classes == 1:
-        loss = 'binary_crossentropy'
-        metrics = ['accuracy', tf.keras.metrics.MeanIoU(num_classes=2)]
+        # Binary segmentation - choose loss based on parameter
+        if loss_type == 'dice':
+            loss = dice_loss
+        elif loss_type == 'iou':
+            loss = iou_loss
+        elif loss_type == 'tversky':
+            loss = tversky_loss
+        elif loss_type == 'combined':
+            loss = combined_loss
+        elif loss_type == 'weighted_bce':
+            from functools import partial
+            loss = partial(weighted_binary_crossentropy, pos_weight=pos_weight)
+        else:
+            loss = 'binary_crossentropy'
+        
+        # Metrics for binary segmentation
+        metrics = [
+            'accuracy',
+            tf.keras.metrics.MeanIoU(num_classes=2),
+            dice_coefficient
+        ]
     else:
+        # Multi-class segmentation
         loss = 'sparse_categorical_crossentropy'
         metrics = ['accuracy', tf.keras.metrics.MeanIoU(num_classes=num_classes)]
-    
+
     model.compile(
         optimizer=optimizer,
         loss=loss,
         metrics=metrics
     )
-    
+
     return model
 
 
