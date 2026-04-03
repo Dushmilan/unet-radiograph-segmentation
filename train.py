@@ -164,13 +164,14 @@ def train_unet(
         verbose=1
     )
     
-    # TensorBoard
-    tensorboard_callback = TensorBoard(
-        log_dir=os.path.join(logs_dir, 'training'),
-        histogram_freq=1,
-        write_graph=True,
-        write_images=True
-    )
+    # TensorBoard - REMOVED due to OOM issues with histogram logging
+    # Use CSV logger instead for training metrics
+    # tensorboard_callback = TensorBoard(
+    #     log_dir=os.path.join(logs_dir, 'training'),
+    #     histogram_freq=0,
+    #     write_graph=False,
+    #     write_images=False
+    # )
     
     # CSV logger
     csv_logger_callback = CSVLogger(
@@ -183,7 +184,6 @@ def train_unet(
         checkpoint_callback,
         early_stopping_callback,
         reduce_lr_callback,
-        tensorboard_callback,
         csv_logger_callback
     ]
     
